@@ -1,0 +1,13 @@
+[package]
+name = "icors"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+clap = { version = "4", features = ["derive"] }
+compact_str = "0.9.0"
+oxrdf = "0.3.3"
+oxttl = "0.2"
+rusqlite = { version = "0.39", features = ["bundled"] }
+zstd = "0.13"
