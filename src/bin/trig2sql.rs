@@ -1,9 +1,10 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser as _;
 use compact_str::{CompactString, ToCompactString};
-use oxrdf::{GraphName, NamedNodeRef, NamedOrBlankNode, Term};
+use icors::{MAGIC_TYPE_NAME, MAGIC_TYPE_TYPE};
+use oxrdf::{GraphName, NamedOrBlankNode, Term};
 use oxttl::TriGParser;
-use rusqlite::{Statement, params};
+use rusqlite::params;
 use std::collections::HashMap;
 use std::collections::hash_map::Entry;
 use std::path::PathBuf;
@@ -18,7 +19,7 @@ struct Cli {
 
 enum NameOrLiteral {
     Name(CompactString),
-    Literal(CompactString, Datatype),
+    Literal(CompactString, CompactString),
 }
 
 fn main() -> Result<()> {
@@ -43,8 +44,7 @@ fn main() -> Result<()> {
     let db = db.transaction()?;
     db.execute_batch(include_str!("schema.sql"))?;
 
-    let mut name_insert = db.prepare("INSERT INTO name (id, value) VALUES (?, ?)")?;
-    let mut literal_insert = db.prepare("INSERT INTO literal (id, value) VALUES (?, ?)")?;
+    let mut value_insert = db.prepare("INSERT INTO value (id, type, value) VALUES (?, ?, ?)")?;
     let mut quad_insert =
         db.prepare("INSERT INTO quad (graph, subject, predicate, object) VALUES (?, ?, ?, ?)")?;
 
@@ -65,20 +65,21 @@ fn main() -> Result<()> {
 
         let obj = match quad.object {
             Term::NamedNode(v) => NameOrLiteral::Name(v.into_string().to_compact_string()),
-            Term::Literal(lit) => {
-                NameOrLiteral::Literal(lit.value().to_compact_string(), lit.datatype().try_into()?)
-            }
+            Term::Literal(lit) => NameOrLiteral::Literal(
+                lit.value().to_compact_string(),
+                lit.datatype().to_compact_string(),
+            ),
             other => bail!("unsupported object: {other:?}"),
         };
 
-        let mut upsert = |v: CompactString, insert: &mut Statement| -> Result<i64> {
+        let mut upsert = |v: CompactString, type_: i64| -> Result<i64> {
             let len = names.len();
             match names.entry(v.clone()) {
                 Entry::Occupied(o) => Ok(*o.get()),
                 Entry::Vacant(v) => {
                     let len = i64::try_from(len)?;
-                    insert
-                        .insert(params![len, v.key().as_str().to_string()])
+                    value_insert
+                        .insert(params![len, type_, v.key().as_str().to_string()])
                         .context("insert name")?;
                     v.insert(len);
                     Ok(len)
@@ -86,12 +87,15 @@ fn main() -> Result<()> {
             }
         };
 
-        let graph_name = upsert(graph_name, &mut name_insert)?;
-        let subject = upsert(subject, &mut name_insert)?;
-        let pred = upsert(pred, &mut name_insert)?;
+        let graph_name = upsert(graph_name, MAGIC_TYPE_NAME)?;
+        let subject = upsert(subject, MAGIC_TYPE_NAME)?;
+        let pred = upsert(pred, MAGIC_TYPE_NAME)?;
         let obj = match obj {
-            NameOrLiteral::Name(v) => upsert(v, &mut name_insert)?,
-            NameOrLiteral::Literal(v, _) => upsert(v, &mut literal_insert)?,
+            NameOrLiteral::Name(v) => upsert(v, MAGIC_TYPE_NAME)?,
+            NameOrLiteral::Literal(v, type_) => {
+                let type_ = upsert(type_, MAGIC_TYPE_TYPE)?;
+                upsert(v, type_)?
+            }
         };
 
         quad_insert
@@ -104,51 +108,10 @@ fn main() -> Result<()> {
         .expect("thread panic propagation")
         .context("reading file / submitting")?;
 
-    drop(name_insert);
+    drop(value_insert);
     drop(quad_insert);
-    drop(literal_insert);
 
     db.commit()?;
 
     Ok(())
-}
-
-enum Datatype {
-    XsdString,
-    XsdInteger,
-    XsdLong,
-    XsdDouble,
-    XsdFloat,
-    XsdBoolean,
-    XsdDateTime,
-    XsdDate,
-    XsdDecimal,
-    XsdAnyURI,
-    XsdBase64Binary,
-    XsdNonNegativeInteger,
-    RdfLangString,
-    RdfSchemaLiteral,
-}
-
-impl TryFrom<NamedNodeRef<'_>> for Datatype {
-    type Error = anyhow::Error;
-    fn try_from(value: NamedNodeRef<'_>) -> Result<Self> {
-        Ok(match value.as_str() {
-            "http://www.w3.org/2001/XMLSchema#string" => Self::XsdString,
-            "http://www.w3.org/2001/XMLSchema#integer" => Self::XsdInteger,
-            "http://www.w3.org/2001/XMLSchema#long" => Self::XsdLong,
-            "http://www.w3.org/2001/XMLSchema#double" => Self::XsdDouble,
-            "http://www.w3.org/2001/XMLSchema#float" => Self::XsdFloat,
-            "http://www.w3.org/2001/XMLSchema#boolean" => Self::XsdBoolean,
-            "http://www.w3.org/2001/XMLSchema#dateTime" => Self::XsdDateTime,
-            "http://www.w3.org/2001/XMLSchema#date" => Self::XsdDate,
-            "http://www.w3.org/2001/XMLSchema#decimal" => Self::XsdDecimal,
-            "http://www.w3.org/2001/XMLSchema#anyURI" => Self::XsdAnyURI,
-            "http://www.w3.org/2001/XMLSchema#nonNegativeInteger" => Self::XsdNonNegativeInteger,
-            "http://www.w3.org/2001/XMLSchema#base64Binary" => Self::XsdBase64Binary,
-            "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString" => Self::RdfLangString,
-            "http://www.w3.org/2000/01/rdf-schema#Literal" => Self::RdfSchemaLiteral,
-            other => bail!("unsupported datatype: {other}"),
-        })
-    }
 }

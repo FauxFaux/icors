@@ -1,12 +1,9 @@
-create table if not exists name (
+create table if not exists value (
     id integer primary key not null,
+    type integer not null,
     value text not null
 );
 
-create table if not exists literal (
-    id integer primary key not null,
-    value text not null
-);
 
 create table if not exists quad (
     graph integer not null,
