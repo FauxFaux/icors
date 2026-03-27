@@ -2,3 +2,5 @@
 .idea/
 *.sqlite
 *.zst
+*.trig*
+
