@@ -1,7 +1,7 @@
 use anyhow::{Context, Result, bail};
 use clap::Parser as _;
 use compact_str::{CompactString, ToCompactString};
-use oxrdf::{GraphName, NamedOrBlankNode, Term};
+use oxrdf::{GraphName, NamedNodeRef, NamedOrBlankNode, Term};
 use oxttl::TriGParser;
 use rusqlite::{Statement, params};
 use std::collections::HashMap;
@@ -18,7 +18,7 @@ struct Cli {
 
 enum NameOrLiteral {
     Name(CompactString),
-    Literal(CompactString),
+    Literal(CompactString, Datatype),
 }
 
 fn main() -> Result<()> {
@@ -65,7 +65,9 @@ fn main() -> Result<()> {
 
         let obj = match quad.object {
             Term::NamedNode(v) => NameOrLiteral::Name(v.into_string().to_compact_string()),
-            Term::Literal(lit) => NameOrLiteral::Literal(lit.value().to_compact_string()),
+            Term::Literal(lit) => {
+                NameOrLiteral::Literal(lit.value().to_compact_string(), lit.datatype().try_into()?)
+            }
             other => bail!("unsupported object: {other:?}"),
         };
 
@@ -89,7 +91,7 @@ fn main() -> Result<()> {
         let pred = upsert(pred, &mut name_insert)?;
         let obj = match obj {
             NameOrLiteral::Name(v) => upsert(v, &mut name_insert)?,
-            NameOrLiteral::Literal(v) => upsert(v, &mut literal_insert)?,
+            NameOrLiteral::Literal(v, _) => upsert(v, &mut literal_insert)?,
         };
 
         quad_insert
@@ -109,4 +111,44 @@ fn main() -> Result<()> {
     db.commit()?;
 
     Ok(())
+}
+
+enum Datatype {
+    XsdString,
+    XsdInteger,
+    XsdLong,
+    XsdDouble,
+    XsdFloat,
+    XsdBoolean,
+    XsdDateTime,
+    XsdDate,
+    XsdDecimal,
+    XsdAnyURI,
+    XsdBase64Binary,
+    XsdNonNegativeInteger,
+    RdfLangString,
+    RdfSchemaLiteral,
+}
+
+impl TryFrom<NamedNodeRef<'_>> for Datatype {
+    type Error = anyhow::Error;
+    fn try_from(value: NamedNodeRef<'_>) -> Result<Self> {
+        Ok(match value.as_str() {
+            "http://www.w3.org/2001/XMLSchema#string" => Self::XsdString,
+            "http://www.w3.org/2001/XMLSchema#integer" => Self::XsdInteger,
+            "http://www.w3.org/2001/XMLSchema#long" => Self::XsdLong,
+            "http://www.w3.org/2001/XMLSchema#double" => Self::XsdDouble,
+            "http://www.w3.org/2001/XMLSchema#float" => Self::XsdFloat,
+            "http://www.w3.org/2001/XMLSchema#boolean" => Self::XsdBoolean,
+            "http://www.w3.org/2001/XMLSchema#dateTime" => Self::XsdDateTime,
+            "http://www.w3.org/2001/XMLSchema#date" => Self::XsdDate,
+            "http://www.w3.org/2001/XMLSchema#decimal" => Self::XsdDecimal,
+            "http://www.w3.org/2001/XMLSchema#anyURI" => Self::XsdAnyURI,
+            "http://www.w3.org/2001/XMLSchema#nonNegativeInteger" => Self::XsdNonNegativeInteger,
+            "http://www.w3.org/2001/XMLSchema#base64Binary" => Self::XsdBase64Binary,
+            "http://www.w3.org/1999/02/22-rdf-syntax-ns#langString" => Self::RdfLangString,
+            "http://www.w3.org/2000/01/rdf-schema#Literal" => Self::RdfSchemaLiteral,
+            other => bail!("unsupported datatype: {other}"),
+        })
+    }
 }
